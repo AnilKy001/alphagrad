@@ -102,8 +102,8 @@ MINIBATCHSIZE = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
 
 policy_key, value_key = jrand.split(key, 2)
 # Larger models seem to help
-policy_net = PolicyNet(graph_shape, 64, 5, 6, ff_dim=256, mlp_dims=[256, 256], key=policy_key)
-value_net = ValueNet(graph_shape, 64, 4, 6, ff_dim=256, mlp_dims=[256, 128, 64], key=value_key)
+policy_net = PolicyNet(graph_shape, 64, 5, 6, ff_dim=256, mlp_dims=[256, 256], key=policy_key) # Actor
+value_net = ValueNet(graph_shape, 64, 4, 6, ff_dim=256, mlp_dims=[256, 128, 64], key=value_key) # Critic
 p_init_key, v_init_key = jrand.split(key, 2)
 
 init_fn = jnn.initializers.orthogonal(jnp.sqrt(2))

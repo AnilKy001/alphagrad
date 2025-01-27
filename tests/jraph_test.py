@@ -568,7 +568,7 @@ def add_self_edges_fn(receivers: jnp.ndarray, senders: jnp.ndarray,
     senders = jnp.concatenate((senders, jnp.arange(total_num_nodes)), axis=0)
     return receivers, senders
 
-
+'''
 class EdgeGATLayer(eqx.Module):
     edge_update: eqx.nn.Linear
     node_update: eqx.nn.Linear
@@ -632,6 +632,7 @@ class EdgeGATNetwork(eqx.Module):
     gat_layers: Sequence[EdgeGATLayer]
     output_layer: eqx.nn.Linear
     
+    # edge_gat_net = EdgeGATNetwork(4, 4, (32, 32, 32), (16, 16, 16), key)
     def __init__(self, sparsity_embedding_size: int, op_type_embedding_size: int, 
                 edge_feature_shapes, node_feature_shapes, key):
         assert len(edge_feature_shapes) == len(node_feature_shapes), "The number"\
@@ -678,10 +679,14 @@ class EdgeGATNetwork(eqx.Module):
         nodes = jax.vmap(self.output_layer)(graph.nodes)
         nodes = jnp.squeeze(nodes)
         return jnp.where(jnp.squeeze(mask) > 0., -jnp.inf, nodes)
+'''
+
+
+from graph_network import EdgeGATNetwork
 
 
 key = jrand.PRNGKey(42)
-edge_gat_net = EdgeGATNetwork(4, 4, (32, 32, 32), (16, 16, 16), key)
+edge_gat_net = EdgeGATNetwork(4, (32, 32, 32), (16, 16, 16), key)
 
 
 sparse_graph = sparse_graph._replace(
@@ -693,4 +698,3 @@ sparse_graph = sparse_graph._replace(
 
 logits = edge_gat_net(sparse_graph)
 print(jnn.softmax(logits))
-
