@@ -16,6 +16,11 @@ NUM_SPARSITY_TYPES = 21
 OFFSET = (NUM_SPARSITY_TYPES - 1) // 2
 
 def graph_sparsify(dense_graph: Array) -> GraphsTuple:
+    """
+    GNNs operate on a sparse graph representation. This representation is 
+    a tuple that stores node/edge features and sender/receiver indices.
+    This function converts a dense graph representation to the sparse one.
+    """
 
     # Each vertex has an integer as its feature. 
     # Integer is the mask of the vertex for elimination.
@@ -33,7 +38,7 @@ def graph_sparsify(dense_graph: Array) -> GraphsTuple:
     edge_features = jnp.stack(edge_features)
 
     sparse_graph = GraphsTuple(
-        nodes=node_features,
+        nodes=node_features, # Node features are masks for elimination. (0 not eliminated, 1 eliminated).
         edges=edge_features,
         senders=edge_positions[0],
         receivers=edge_positions[1] + num_input_nodes,
@@ -371,7 +376,7 @@ def vertex_eliminate(vertex: int, graph: GraphsTuple) -> GraphsTuple:
     # jax.debug.print("vertex: {v}, in edges: {i}, out edges: {j}", v=vertex, i=i, j=j)
     # Calculate the new edges and where in the graph representation we can add them
     is_zero = jnp.all(edge_vals == 0, axis=-1)
-    free_idxs = jnp.argwhere(is_zero).flatten() # edges where features are set to zero.
+    free_idxs = jnp.argwhere(is_zero, size=IN_VAL_BUFFER_SIZE * OUT_VAL_BUFFER_SIZE).flatten() # edges where features are set to zero.
     edge_combos = jnp.stack(jnp.meshgrid(in_pos[:, 0], out_pos[:, 1]))
     edge_combos = edge_combos.reshape(2, IN_VAL_BUFFER_SIZE*OUT_VAL_BUFFER_SIZE).T
 
@@ -380,19 +385,6 @@ def vertex_eliminate(vertex: int, graph: GraphsTuple) -> GraphsTuple:
     output = make_new_edges(edge_combos, in_vals, out_vals, edge_conn, edge_vals, free_idxs)
     k, edge_conn, edge_vals, n_ops = output
 
-    elim_in = []
-    for e, x in zip(in_pos, in_vals):
-        if jnp.all(e != -1.):
-            elim_in.append((int(e[0]), int(e[1])))
-
-    elim_out = []
-    for e, x in zip(out_pos, out_vals):
-        if jnp.all(e != -1.):
-            elim_out.append((int(e[0]), int(e[1])))
-
-    elim_in.extend(elim_out)
-    # print("Eliminated edges: ", elim_in)
-    # print("n_ops: ", n_ops)
     # Build everything into a new graph
     senders = edge_conn[:, 0]
     receivers = edge_conn[:, 1]

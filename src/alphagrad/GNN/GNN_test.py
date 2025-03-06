@@ -21,6 +21,8 @@ from graphax.examples import RobotArm_6DOF
 from alphagrad.GNN.graph_network import EdgeGATNetwork
 from alphagrad.GNN.graph_utils import graph_sparsify, reverse, add_self_edges_fn
 
+from alphagrad.transformer.models import PPOModelGNN
+
 # jax.config.update("jax_disable_jit", True)
 
 key_ = jrand.PRNGKey(42)
@@ -39,8 +41,8 @@ dense_graph = make_graph(F, *xs)
 sparse_graph = graph_sparsify(dense_graph)
 sparse_graph = add_self_edges_fn(sparse_graph)
 
-GNN = EdgeGATNetwork(10, 5, 1, [5, 16, 16], [5, 16, 16], key2)
+model = PPOModelGNN(4, 5, 1, [16, 16], [16, 16], key1)
 
-mask_ = GNN(sparse_graph)
+logits, value = model(sparse_graph, key2)
 
-print(mask_)
+print("Done")

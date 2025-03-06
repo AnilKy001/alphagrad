@@ -7,6 +7,8 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrand
 
+from jraph import GraphsTuple
+
 from chex import Array
 
 from .core import (vertex_eliminate, 
@@ -14,6 +16,9 @@ from .core import (vertex_eliminate,
                     get_vertex_mask, 
                     get_shape)
 from .interpreter import make_graph
+
+from alphagrad.GNN.graph_utils import graph_sparsify
+from alphagrad.GNN.graph_utils import vertex_eliminate as sparse_vertex_eliminate
     
 from graphax import jacve
 
@@ -75,6 +80,43 @@ class RuntimeGame:
         new_state, new_act_seq, terminated = _step(state, action)
         reward = self.reward_fn(act_seq=new_act_seq) if terminated else 0.0
         return new_state, reward*self.reward_scale, terminated
+    
+class RuntimeGameSparse:
+    fn: Callable
+    num_samples: int
+    num_actions: int
+    batch_size: int
+    burnin: int
+    graph: GraphsTuple
+    reward_fn: Callable
+    reward_scale: float
+    
+    def __init__(self, batch_size: int, num_samples: int, burnin: int, fn: Callable, *xs, reward_scale: float = 1.) -> None:
+        """Initialize the sparse graph-based runtime game."""
+        dense_graph = make_graph(fn, *xs)  # Create the original dense graph
+        self.graph = graph_sparsify(dense_graph)  # Convert to sparse graph
+        self.fn = fn
+        self.num_actions = dense_graph.at[0, 0, 1].get()  # Number of vertices to eliminate
+        self.num_samples = num_samples
+        self.batch_size = batch_size
+        self.burnin = burnin
+        self.reward_fn = partial(_get_reward2, batch_size, num_samples, burnin, fn, *xs)
+        self.reward_scale = reward_scale
+
+    @partial(jax.jit, static_argnums=(0,))
+    def reset(self) -> Tuple[GraphsTuple, jnp.ndarray]:
+        """Reset the game state, returning the initial sparse graph and an empty action sequence."""
+        return (self.graph, jnp.zeros(self.num_actions, dtype=jnp.int32))
+    
+    def step(self, state: Tuple[GraphsTuple, jnp.ndarray], action: int) -> Tuple[GraphsTuple, jnp.ndarray, bool]:  
+        graph, action_seq = state  # Ensure unpacking works correctly
+        
+        new_graph = sparse_vertex_eliminate(action, graph)  # Perform vertex elimination
+        new_action_seq = action_seq.at[action].set(1)  # Track action taken
+        terminated = jnp.all(new_graph.nodes == 1)  # Check if all nodes are eliminated
+
+        reward = self.reward_fn(act_seq=new_action_seq) if terminated else 0.0  # Reward only at end
+        return new_graph, new_action_seq, terminated  # Ensure it returns exactly three values
         
     
 @partial(jax.jit, donate_argnums=(0,), device=jax.devices("cpu")[0])

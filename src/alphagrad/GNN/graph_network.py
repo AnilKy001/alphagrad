@@ -161,8 +161,10 @@ class EdgeGATNetwork(graphNetwork):
     def __call__(self, graph: jr.GraphsTuple) -> jnp.ndarray:
 
 
+        
+        if graph.nodes.ndim == 1:
+            graph = graph._replace(nodes=jnp.expand_dims(graph.nodes, axis=-1))
         mask = graph.nodes
-        graph = graph._replace(nodes=jnp.expand_dims(graph.nodes, axis=-1))
         graph = self.apply_sparsity_embeddings(graph)
 
         for layer_ in self.gat_layers:

@@ -9,9 +9,12 @@ from chex import Array, PRNGKey
 import equinox as eqx
 from equinox import static_field
 
+from jraph import GraphsTuple
+
 from alphagrad.transformer import MLP
 from alphagrad.transformer import Encoder
 from alphagrad.transformer import PositionalEncoder
+from alphagrad.GNN.graph_network import EdgeGATNetwork
 
 
 class GraphEmbedding(eqx.Module):
@@ -162,8 +165,58 @@ class PPOModel(eqx.Module):
         # embeddings = jax.vmap(jnp.matmul, in_axes=(0, None))(embeddings, self.projection)
         embeddings = jax.vmap(self.projection, in_axes=0)(embeddings)
         return self.transformer(embeddings.T, mask=attn_mask, key=key)
+
+
+class PPOModelGNN(eqx.Module):    
+    """
+    Generates state value estimate and policy logits by using GNNs as policy 
+    and value networks.
+    """
+
+    policy_net: EdgeGATNetwork
+    value_net: EdgeGATNetwork
     
+    def __init__(
+            self,
+            edge_sparsity_embedding_size: int,
+            init_edge_feature_shape: int,
+            init_node_feature_shape: int,
+            edge_feature_shapes: Sequence[int],
+            node_feature_shapes: Sequence[int],
+            key: PRNGKey
+    ) -> None:
+        super().__init__()
+        policy_key, value_key = jrand.split(key, 2)
+        self.policy_net = EdgeGATNetwork(
+                edge_sparsity_embedding_size, 
+                init_edge_feature_shape, 
+                init_node_feature_shape, 
+                edge_feature_shapes, 
+                node_feature_shapes, 
+                policy_key
+        )
+        self.value_net = EdgeGATNetwork(
+                edge_sparsity_embedding_size, 
+                init_edge_feature_shape, 
+                init_node_feature_shape, 
+                edge_feature_shapes, 
+                node_feature_shapes, 
+                value_key
+        )
     
+    def __call__(self, sparse_graph: GraphsTuple, key: PRNGKey) -> Array:
+
+        elimination_mask = sparse_graph.nodes
+        elimination_mask = jnp.squeeze(elimination_mask)
+
+        action_logits_unmasked = self.policy_net(sparse_graph)
+        action_logits = jnp.where(elimination_mask > 0, -jnp.inf, action_logits_unmasked)
+
+        state_values = self.value_net(sparse_graph)
+        state_value_estimate = jnp.mean(state_values)
+
+        return action_logits, state_value_estimate
+
 class AlphaZeroModel(eqx.Module):
     embedding: eqx.nn.Conv2d
     projection: Array

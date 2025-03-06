@@ -22,7 +22,7 @@ from graphax.examples import (RobotArm_6DOF, RoeFlux_1d, f, Perceptron,
 from alphagrad.GNN.graph_network import EdgeGATNetwork
 from alphagrad.GNN.graph_utils import graph_sparsify, reverse, add_self_edges_fn
 
-jax.config.update("jax_disable_jit", True)
+# jax.config.update("jax_disable_jit", True)
 
 # F = RobotArm_6DOF
 
@@ -72,7 +72,7 @@ def func_test(F):
 
 
     key = jrand.PRNGKey(42)
-    edge_gat_net = EdgeGATNetwork(4, (32, 32, 32), (16, 16, 16), key)
+    edge_gat_net = EdgeGATNetwork(4, 5, 1, (32, 32, 32), (16, 16, 16), key)
 
     sparse_graph = sparse_graph._replace(
         nodes=jnp.astype(sparse_graph.nodes[:, jnp.newaxis], jnp.int32),

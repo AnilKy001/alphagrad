@@ -14,6 +14,9 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrand
 
+import jraph
+from jraph import GraphsTuple
+
 from tqdm import tqdm
 import wandb
 
@@ -23,11 +26,15 @@ import equinox as eqx
 
 from alphagrad.config import setup_experiment
 from alphagrad.experiments import make_benchmark_scores
-from alphagrad.vertexgame import step
+from alphagrad.vertexgame import step, step_sparse
 from alphagrad.utils import symlog, symexp, entropy, explained_variance
-from alphagrad.transformer.models import PPOModel
+from alphagrad.transformer.models import PPOModel, PPOModelGNN
 
-DEBUG = 0
+from alphagrad.GNN.graph_utils import graph_sparsify
+
+# jax.config.update("jax_disable_jit", True)
+
+DEBUG = 1
 
 parser = argparse.ArgumentParser()
 
@@ -59,7 +66,18 @@ model_key, init_key, key = jrand.split(key, 3)
 
 
 config, graph, graph_shape, task_fn = setup_experiment(args.task, args.config_path)
+sparse_graph = graph_sparsify(graph)
 mM_order, scores = make_benchmark_scores(graph)
+
+sparse_graph = GraphsTuple(
+        nodes=jnp.array([sparse_graph.nodes]), # Node features are masks for elimination. (0 not eliminated, 1 eliminated).
+        edges=jnp.array([sparse_graph.edges]),
+        senders=jnp.array([sparse_graph.senders]),
+        receivers=jnp.array([sparse_graph.receivers]),
+        n_node=jnp.array([sparse_graph.n_node]),
+        n_edge=jnp.array([sparse_graph.n_edge]),
+        globals=sparse_graph.globals
+    )
 
 parameters = config["hyperparameters"]
 ENTROPY_WEIGHT = parameters["entropy_weight"]
@@ -77,12 +95,21 @@ OBS_SHAPE = reduce(lambda x, y: x*y, graph.shape)
 NUM_ACTIONS = graph.shape[-1] # ROLLOUT_LENGTH # TODO fix this
 MINIBATCHSIZE = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
 
-model = PPOModel(graph_shape, 64, 6, 8,
-                ff_dim=256,
-                num_layers_policy=2,
-                policy_ff_dims=[256, 256],
-                value_ff_dims=[256, 128, 64], 
-                key=key)
+# model = PPOModel(graph_shape, 64, 6, 8,
+#                 ff_dim=256,
+#                 num_layers_policy=2,
+#                 policy_ff_dims=[256, 256],
+#                 value_ff_dims=[256, 128, 64], 
+#                 key=key)
+
+model = PPOModelGNN(
+    edge_sparsity_embedding_size=4,
+    init_edge_feature_shape=5,
+    init_node_feature_shape=1,
+    edge_feature_shapes=[16, 32],
+    node_feature_shapes=[16, 32],
+    key=key
+)
 
 
 init_fn = jnn.initializers.orthogonal(jnp.sqrt(2))
@@ -147,10 +174,8 @@ def get_num_clipping_triggers(ratio):
 
 @partial(jax.vmap, in_axes=(None, 0, 0, 0))
 def get_log_probs_and_value(network, state, action, key):
-    mask = 1. - state.at[1, 0, :].get()
-    output = network(state, key=key)
-    value = output[0]
-    logits = output[1:]
+    mask = 1. - jnp.squeeze(state.nodes)
+    logits, value = network(state, key=key)
     prob_dist = jnn.softmax(logits, axis=-1, where=mask)
 
     log_prob = jnp.log(prob_dist[action] + 1e-7)
@@ -160,9 +185,9 @@ def get_log_probs_and_value(network, state, action, key):
 @jax.jit
 @jax.vmap
 def get_returns(trajectories):
-    rewards = trajectories[:, OBS_SHAPE+1]
-    dones = trajectories[:, OBS_SHAPE+2]
-    discounts = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+4]
+    rewards = trajectories[2]
+    dones = trajectories[3]
+    discounts = trajectories[8]
     inputs = jnp.stack([rewards, dones, discounts]).T
     
     def loop_fn(episodic_return, traj):
@@ -184,14 +209,14 @@ def get_returns(trajectories):
 # Calculates advantages using generalized advantage estimation
 @jax.jit
 @jax.vmap
-def get_advantages(trajectories): # (32, 98, 109186)
-    rewards = trajectories[:, OBS_SHAPE+1] # (98,)
-    dones = trajectories[:, OBS_SHAPE+2]  # (98,)
-    values = trajectories[:, 2*OBS_SHAPE+3]  # (98,)
-    next_values = jnp.roll(values, -1, axis=0)
-    next_values = next_values.at[-1].set(0.)  # (98,)
-    discounts = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+4]  # (98,)
-    inputs = jnp.stack([rewards, dones, values, next_values, discounts]).T  # (98, 5)
+def get_advantages(trajectories):
+    rewards = trajectories[2] # (98,1)
+    dones = trajectories[3] # (98,1)
+    values = trajectories[4] # (98,1)
+    next_values = trajectories[6] # (98,1)
+    discounts = trajectories[8] # (98,1)
+    inputs = jnp.stack([rewards, dones, values, next_values, discounts]).T 
+    inputs = jnp.squeeze(inputs) # (98, 5)
 
     def loop_fn(carry, traj):
         episodic_return, lastgaelam = carry
@@ -214,20 +239,123 @@ def get_advantages(trajectories): # (32, 98, 109186)
         new_sample = jnp.array([episodic_return, estim_return, advantage])
         return next_carry, new_sample
     _, output = lax.scan(loop_fn, (0., 0.), inputs[::-1])
-    return jnp.concatenate([trajectories, output[::-1]], axis=-1)
+    return (*trajectories, output[::-1])
     
     
 @jax.jit
 def shuffle_and_batch(trajectories, key):
     size = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
-    trajectories = trajectories.reshape(-1, trajectories.shape[-1]) # (32x98, 109189)
-    trajectories = jrand.permutation(key, trajectories, axis=0)
-    return trajectories.reshape(MINIBATCHES, size, trajectories.shape[-1]) # (4, 784, 109189)
+    state = trajectories[0]
+    new_state = trajectories[5]
+    
+    # Shuffling and batching state and new_state:   
+
+    all_state_features = jnp.concatenate([
+            state.nodes.reshape(state.nodes.shape[0] * state.nodes.shape[1], -1),
+            state.edges.reshape(state.edges.shape[0] * state.edges.shape[1], -1),
+            state.senders.reshape(state.edges.shape[0] * state.edges.shape[1], -1), 
+            state.receivers.reshape(state.edges.shape[0] * state.edges.shape[1], -1),
+            state.globals.reshape(state.edges.shape[0] * state.edges.shape[1], -1)
+        ], axis=-1)
+    
+    node_index = state.nodes.shape[-1]
+    edge_index = node_index + state.edges.shape[-2] * state.edges.shape[-1]
+    senders_index = edge_index + state.senders.shape[-1]
+    receivers_index = senders_index + state.receivers.shape[-1]
+    globals_index = receivers_index + state.globals.shape[-1]
+
+    node_index_new = globals_index + new_state.nodes.shape[-1]
+    edge_index_new = node_index_new + new_state.edges.shape[-2] * new_state.edges.shape[-1]
+    senders_index_new = edge_index_new + new_state.senders.shape[-1]
+    receivers_index_new = senders_index_new + new_state.receivers.shape[-1]
+    globals_index_new = receivers_index_new + new_state.globals.shape[-1]
+    
+    all_new_state_features = jnp.concatenate([
+            new_state.nodes.reshape(new_state.nodes.shape[0] * new_state.nodes.shape[1], -1),
+            new_state.edges.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1),
+            new_state.senders.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1), 
+            new_state.receivers.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1),
+            new_state.globals.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1)
+        ], axis=-1)
+    
+    gathered_state_features = jnp.concatenate([all_state_features, all_new_state_features], axis=-1)
+
+    permuted_state_features = jrand.permutation(key, gathered_state_features, axis=0)
+
+    rebatched_state_nodes = permuted_state_features[:, 0:node_index].reshape(MINIBATCHES, size, -1)
+    rebatched_state_edges = permuted_state_features[:, node_index:edge_index].reshape(MINIBATCHES, size, -1, state.edges.shape[-1])
+    rebatched_state_senders = permuted_state_features[:, edge_index:senders_index].reshape(MINIBATCHES, size, -1)
+    rebatched_state_receivers = permuted_state_features[:, senders_index:receivers_index].reshape(MINIBATCHES, size, -1)
+    rebatched_state_n_node = state.n_node.reshape(MINIBATCHES, size)
+    rebatched_state_n_edge = state.n_edge.reshape(MINIBATCHES, size)
+    rebatched_state_globals = permuted_state_features[:, receivers_index:globals_index].reshape(MINIBATCHES, size, -1)
+    
+    state = jraph.GraphsTuple(
+        nodes=rebatched_state_nodes,
+        edges=rebatched_state_edges,
+        senders=rebatched_state_senders,
+        receivers=rebatched_state_receivers,
+        n_node=rebatched_state_n_node,
+        n_edge=rebatched_state_n_edge,
+        globals=rebatched_state_globals
+    )
+
+    rebatched_new_state_nodes = permuted_state_features[:, globals_index:node_index_new].reshape(MINIBATCHES, size, -1)
+    rebatched_new_state_edges = permuted_state_features[:, node_index_new:edge_index_new].reshape(MINIBATCHES, size, -1, new_state.edges.shape[-1])
+    rebatched_new_state_senders = permuted_state_features[:, edge_index_new:senders_index_new].reshape(MINIBATCHES, size, -1)
+    rebatched_new_state_receivers = permuted_state_features[:, senders_index_new:receivers_index_new].reshape(MINIBATCHES, size, -1)
+    rebatched_new_state_n_node = new_state.n_node.reshape(MINIBATCHES, size)
+    rebatched_new_state_n_edge = new_state.n_edge.reshape(MINIBATCHES, size)
+    rebatched_new_state_globals = permuted_state_features[:, receivers_index_new:globals_index_new].reshape(MINIBATCHES, size, -1)
+
+    new_state = jraph.GraphsTuple(
+        nodes=rebatched_new_state_nodes,
+        edges=rebatched_new_state_edges,
+        senders=rebatched_new_state_senders,
+        receivers=rebatched_new_state_receivers,
+        n_node=rebatched_new_state_n_node,
+        n_edge=rebatched_new_state_n_edge,
+        globals=rebatched_new_state_globals
+    )
+
+    # Shuffling and batching the rest of the trajectory:
+
+    traj_rest = (*trajectories[1:5], *trajectories[6:])
+    traj_rest = jnp.concatenate(traj_rest, axis=-1)
+    traj_rest = traj_rest.reshape(-1, traj_rest.shape[-1])
+    traj_rest = jrand.permutation(key, traj_rest, axis=0)
+    traj_rest = traj_rest.reshape(MINIBATCHES, size, traj_rest.shape[-1])
+
+    traj_idx_1 = trajectories[1].shape[-1]
+    traj_idx_2 = traj_idx_1 + trajectories[2].shape[-1]
+    traj_idx_3 = traj_idx_2 + trajectories[3].shape[-1]
+    traj_idx_4 = traj_idx_3 + trajectories[4].shape[-1]
+    traj_idx_6 = traj_idx_4 + trajectories[6].shape[-1]
+    traj_idx_7 = traj_idx_6 + trajectories[7].shape[-1]
+    traj_idx_8 = traj_idx_7 + trajectories[8].shape[-1]
+    traj_idx_9 = traj_idx_8 + trajectories[9].shape[-1]
+
+    new_trajectories = (
+        state,
+        traj_rest[:, :, 0:traj_idx_1],
+        traj_rest[:, :, traj_idx_1:traj_idx_2],
+        traj_rest[:, :, traj_idx_2:traj_idx_3],
+        traj_rest[:, :, traj_idx_3:traj_idx_4],
+        new_state,
+        traj_rest[:, :, traj_idx_4:traj_idx_6],
+        traj_rest[:, :, traj_idx_6:traj_idx_7],
+        traj_rest[:, :, traj_idx_7:traj_idx_8],
+        traj_rest[:, :, traj_idx_8:traj_idx_9],
+    )
+
+    return new_trajectories
 
 
-def init_carry(keys):
-    graphs = jnp.tile(graph[jnp.newaxis, ...], (len(keys), 1, 1, 1))
-    return graphs
+def init_carry_sparse(keys):
+    graphs_seq = [sparse_graph for _ in range(len(keys))]
+    graphs_batch = jraph.batch(graphs_seq)
+
+    return graphs_batch
 
 
 # Implementation of the RL algorithm
@@ -237,30 +365,37 @@ def rollout_fn(network, rollout_length, init_carry, key):
     keys = jrand.split(key, rollout_length)
     def step_fn(state, key):
         net_key, next_net_key, act_key = jrand.split(key, 3)
-        mask = 1. - state.at[1, 0, :].get()
-        
-        output = network(state, key=net_key)
-        value = output[0]
-        logits = output[1:]
-        prob_dist = jnn.softmax(logits, axis=-1, where=mask)
+        # mask = 1. - state.at[1, 0, :].get()
+        mask = 1. - jnp.squeeze(state.nodes)
+
+        # output = network(state, key=net_key)
+        # value = output[0]
+        # logits = output[1:]
+        action_logits, state_value_estimate = network(state, key=net_key)
+        prob_dist = jnn.softmax(action_logits, axis=-1, where=mask)
                 
         distribution = distrax.Categorical(probs=prob_dist)
         action = distribution.sample(seed=act_key)
-        
-        next_state, reward, done = step(state, action)
+        print(action.shape)        
+        # next_state, reward, done = step(state, action)
+        next_state, reward, done = step_sparse(state, action)
         discount = 1.
-        next_output = network(next_state, key=next_net_key)
-        next_value = next_output[0]
-        next_logits = next_output[1:]
+        # next_output = network(next_state, key=next_net_key)
+        # next_value = next_output[0]
+        # next_logits = next_output[1:]
+
+        next_logits, next_value = network(next_state, key=next_net_key)
         
-        new_sample = jnp.concatenate((state.flatten(),
-                                    jnp.array([action]), 
-                                    jnp.array([reward]), 
-                                    jnp.array([done]),
-                                    next_state.flatten(), 
-                                    jnp.array([next_value]),
-                                    prob_dist, 
-                                    jnp.array([discount]))) # (sars')
+        new_sample = (
+            state, 
+            jnp.array([action]), 
+            jnp.array([reward]), 
+            jnp.array([done]), 
+            jnp.array([state_value_estimate]),
+            next_state, 
+            jnp.array([next_value]), 
+            prob_dist, 
+            jnp.array([discount]))
          
         return next_state, new_sample
     
@@ -268,13 +403,13 @@ def rollout_fn(network, rollout_length, init_carry, key):
 
 
 def loss(network, trajectories, keys):
-    state = trajectories[:, :OBS_SHAPE]
+    state = trajectories[0]
     state = state.reshape(-1, *graph.shape)
-    actions = trajectories[:, OBS_SHAPE]
+    actions = jnp.squeeze(trajectories[1])
     actions = jnp.int32(actions)
     
-    rewards = trajectories[:, OBS_SHAPE+1]
-    next_state = trajectories[:, OBS_SHAPE+3:2*OBS_SHAPE+3]
+    rewards = jnp.squeeze(trajectories[2])
+    next_state = trajectories[5]
     next_state = next_state.reshape(-1, *graph.shape)
     
     old_prob_dist = trajectories[:, 2*OBS_SHAPE+4:2*OBS_SHAPE+NUM_ACTIONS+4]
@@ -322,7 +457,7 @@ def train_agent(network, opt_state, trajectories, keys):
 
 @eqx.filter_jit
 def test_agent(network, rollout_length, keys):
-    env_carry = init_carry(keys)
+    env_carry = init_carry_sparse(keys)
     _, trajectories = rollout_fn(network, rollout_length, env_carry, keys)
     returns = get_returns(trajectories)
     best_return = jnp.max(returns[:, 0], axis=-1)
@@ -343,7 +478,7 @@ pbar = tqdm(range(EPISODES))
 samplecounts = 0
 
 env_keys = jrand.split(key, NUM_ENVS)
-env_carry = init_carry(env_keys)
+env_carry = init_carry_sparse(env_keys)
 print("Scores:", scores)
 best_global_return = jnp.max(-jnp.array(scores))
 best_global_act_seq = None
@@ -353,11 +488,12 @@ elim_order_table = wandb.Table(columns=["episode", "return", "elimination order"
 for episode in pbar:
     subkey, key = jrand.split(key, 2)
     keys = jrand.split(key, NUM_ENVS)  
-    env_carry = jax.jit(init_carry)(keys)
+    env_carry = jax.jit(init_carry_sparse)(keys)
+
     env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, keys)
-    print("trajectories shape:", trajectories.shape) #(32, 98, 109186)
-    
-    trajectories = get_advantages(trajectories) # (32, 98, 109189)
+
+    trajectories = get_advantages(trajectories)
+
     batches = shuffle_and_batch(trajectories, subkey)
     
     # We perform multiple descent steps on a subset of the same trajectory sample

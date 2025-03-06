@@ -4,15 +4,21 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp
 
+from jraph import GraphsTuple
+
 from chex import Array
 
 from .core import (vertex_eliminate, 
                     get_elimination_order, 
                     get_vertex_mask, 
                     get_shape)
+
+from ..GNN.graph_utils import vertex_eliminate as sparse_vertex_eliminate
     
 
 EnvOut = Tuple[Array, float, bool, Any]
+
+EnvOutSparse = Tuple[GraphsTuple, float, bool, Any]
     
 def step(edges: Array, action: int) -> EnvOut:  
     """
@@ -51,3 +57,11 @@ def step(edges: Array, action: int) -> EnvOut:
 
     return new_edges, reward, terminated
 
+def step_sparse(sparse_graph: GraphsTuple, action: int) -> EnvOutSparse:
+    new_graph = sparse_vertex_eliminate(action, sparse_graph)
+    nops = jnp.squeeze(new_graph.globals)
+    reward = -nops
+    print("reward", reward)
+    terminated = lax.select(jnp.prod(new_graph.nodes, axis=-1) == 0., False, True) # If all node masks are 1, the game is terminated.
+
+    return new_graph, reward, terminated

@@ -12,6 +12,8 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrand
 
+import jraph
+
 from tqdm import tqdm
 import wandb
 
@@ -25,10 +27,15 @@ from graphax.examples import RoeFlux_1d
 from alphagrad.utils import (entropy, explained_variance, symlog, symexp,
                             default_value_transform, default_inverse_value_transform)
 from alphagrad.vertexgame import forward, reverse, cross_country
-from alphagrad.vertexgame.runtime_game import RuntimeGame, _get_reward2
+from alphagrad.vertexgame.runtime_game import RuntimeGame, RuntimeGameSparse, _get_reward2
 from alphagrad.vertexgame.transforms import minimal_markowitz
-from alphagrad.transformer.models import PPOModel
+from alphagrad.transformer.models import PPOModel, PPOModelGNN
 from alphagrad.config import setup_experiment
+
+from alphagrad.GNN.graph_utils import forward as sparse_forward
+from alphagrad.GNN.graph_utils import reverse as sparse_reverse
+from alphagrad.GNN.graph_utils import cross_country as sparse_cross_country
+from alphagrad.GNN.graph_utils import graph_sparsify
 
 parser = argparse.ArgumentParser()
 
@@ -224,6 +231,13 @@ def init_carry(keys):
     act_seqs = jnp.zeros((len(keys), env.num_actions), dtype=jnp.int32)
     return (graphs, act_seqs)
 
+@jax.jit
+def init_carry_sparse(keys):
+    sparse_graph = graph_sparsify(env.graph)
+    sparse_graphs = jraph.batch([sparse_graph for _ in range(len(keys))])
+    act_seqs = jnp.zeros((len(keys), env.num_actions), dtype=jnp.int32)
+    return (sparse_graphs, act_seqs)
+
 
 def scan(f, init, xs, length=None):
     if xs is None:
@@ -259,7 +273,6 @@ def reset_envs():
     
 def step_fn(i, obs, action):
     return i, env.step(obs, action)
-
     
 # Multi-processing step
 def env_steps(states, actions):
@@ -302,6 +315,18 @@ def get_actions_and_values(network, obs, key):
     action = distribution.sample(seed=act_key)
     return action, prob_dist, value
 
+@eqx.filter_jit
+@partial(jax.vmap, in_axes=(None, 0, 0))
+def get_actions_and_values_sparse(network, obs, key):
+    net_key, act_key = jrand.split(key, 2)
+    # mask = 1. - obs.at[1, 0, :].get()
+    mask = 1. - jnp.squeeze(obs.nodes)
+    logits, state_value_estimate = network(obs, key=net_key)
+    prob_dist = jnn.softmax(logits, axis=-1, where=mask) # might be problematic
+    
+    distribution = distrax.Categorical(probs=prob_dist)
+    action = distribution.sample(seed=act_key)
+    return action, prob_dist, state_value_estimate
 
 # Implementation of the RL algorithm
 # @eqx.filter_jit
@@ -315,6 +340,40 @@ def rollout_fn(network, rollout_length, init_carry, key):
         next_net_key, key = jrand.split(key, 2)
         keys = jrand.split(key, NUM_ENVS)
         actions, prob_dists, _ = get_actions_and_values(network, obs, keys)
+        
+        next_states, rewards, dones = env_steps(states, actions)
+        next_obs, next_act_seqs = next_states
+        discounts = 0.995*jnp.ones(NUM_ENVS) # TODO adjust this        
+        
+        next_net_keys = jrand.split(next_net_key, NUM_ENVS)
+        _, _, next_values = get_actions_and_values(network, next_obs, next_net_keys)
+        
+        new_sample = jnp.concatenate((
+            obs.reshape(NUM_ENVS, -1),
+            actions[:, jnp.newaxis], 
+            rewards[:, jnp.newaxis], 
+            dones[:, jnp.newaxis],
+            next_obs.reshape(NUM_ENVS, -1), 
+            next_values[:, jnp.newaxis],
+            prob_dists, 
+            discounts[:, jnp.newaxis]
+        ), axis=1) # (sars')
+        return next_states, new_sample
+    
+    return scan(step_fn, init_carry, keys)
+
+
+def rollout_fn_sparse(network, rollout_length, init_carry, key):
+    keys = jrand.split(key, rollout_length)
+    
+    def step_fn(states, key):
+        # obs is a GraphsTuple object that is used in one parallelized environment.
+        # network is a PPOModelGNN object.
+        obs, act_seqs = states
+        next_net_key, key = jrand.split(key, 2)
+        keys = jrand.split(key, NUM_ENVS)
+        # actions, prob_dists, _ = get_actions_and_values(network, obs, keys)
+        actions, prob_dists, _ = get_actions_and_values_sparse(network, obs, keys)
         
         next_states, rewards, dones = env_steps(states, actions)
         next_obs, next_act_seqs = next_states
@@ -407,13 +466,7 @@ if __name__ == '__main__':
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
     
-    with open("../../../wandb_key.txt") as f:
-        wandb_key = f.readline()
-    wandb.login(key=wandb_key, 
-                host="https://wandb.fz-juelich.de")
-    wandb.init(entity="ja-lohoff", project="AlphaGrad", 
-                group="Runtime_" + args.task, config=run_config,
-                mode=args.wandb)
+    wandb.init(project="AlphaGrad")
     wandb.run.name = "PPO_runtime_" + args.task + "_" + args.name
 
     _, fwd_fmas = forward(env.graph)
@@ -430,19 +483,32 @@ if __name__ == '__main__':
     fwd_time = runtimes(act_seq="fwd")
     rev_time = runtimes(act_seq="rev")
     print("runtimes:", fwd_time, rev_time, cc_time)
+
+    dense_key, sparse_key = jrand.split(key, 2)
     
     # Creating the model
+    """
     model = PPOModel(
         graph_shape, 64, 6, 8,
         ff_dim=256,
         num_layers_policy=2,
         policy_ff_dims=[256, 256],
         value_ff_dims=[256, 128, 64], 
-        key=key
+        key=dense_key
+    )
+    """
+
+    model_GNN = PPOModelGNN(
+        edge_sparsity_embedding_size=4,
+        init_edge_feature_shape=graph_shape[1],
+        init_node_feature_shape=graph_shape[0],
+        edge_feature_shapes=[64, 64, 64],
+        node_feature_shapes=[64, 64, 64],
+        key=sparse_key
     )
     
     # Initialization could help with performance
-    model = init_weight(model, init_fn, init_key)
+    model = init_weight(model_GNN, init_fn, init_key)
     
     # Set up the multiprocessing pool
     # NOTE: It is imperative to choose "spawn" as starting method!
@@ -459,6 +525,7 @@ if __name__ == '__main__':
     optim = optax.chain(optax.adam(schedule, b1=.9, eps=1e-7), 
                         optax.clip_by_global_norm(.5))
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    opt_state_sparse = optim.init(eqx.filter(model_GNN, eqx.is_inexact_array))
 
 
     # Training loop
@@ -476,8 +543,10 @@ if __name__ == '__main__':
     for episode in pbar:
         test_key, subkey, key = jrand.split(key, 3)
         keys = jrand.split(key, NUM_ENVS)  
-        env_carry = init_carry(keys)
-        env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, key)
+        # env_carry = init_carry(keys)
+        sparse_env_carry = init_carry_sparse(keys)
+        # env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, key)
+        sparse_env_carry, sparse_trajectories = rollout_fn_sparse(model_GNN, ROLLOUT_LENGTH, sparse_env_carry, key)
         trajectories = jnp.swapaxes(trajectories, 0, 1)
         trajectories = get_advantages(trajectories)
         batches = shuffle_and_batch(trajectories, subkey)
