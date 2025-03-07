@@ -189,7 +189,8 @@ def get_returns(trajectories):
     dones = trajectories[3]
     discounts = trajectories[8]
     inputs = jnp.stack([rewards, dones, discounts]).T
-    
+    inputs = jnp.squeeze(inputs)
+
     def loop_fn(episodic_return, traj):
         reward = traj[0]
         done = traj[1]
@@ -237,118 +238,54 @@ def get_advantages(trajectories):
         
         next_carry = (episodic_return, advantage)
         new_sample = jnp.array([episodic_return, estim_return, advantage])
+        
         return next_carry, new_sample
+    
     _, output = lax.scan(loop_fn, (0., 0.), inputs[::-1])
-    return (*trajectories, output[::-1])
+    output = output[::-1]
+    split_outs = jnp.split(output, indices_or_sections=3, axis=-1)
+
+    return (*trajectories, *split_outs)
     
     
 @jax.jit
 def shuffle_and_batch(trajectories, key):
+    """
+    Shuffles and batches trajectory data for mini-batch training in PPO.
+
+    This function performs three main operations:
+    1. Reshapes the trajectory data into a flat array
+    2. Randomly shuffles the data along the first axis
+    3. Splits the data into minibatches
+
+    Args:
+        trajectories: A JAX tree containing trajectory data. Expected to contain:
+            - state information (nodes, edges, etc.)
+            - actions
+            - rewards
+            - other trajectory-related data
+        key: A JAX PRNGKey for random shuffling
+
+    Returns:
+        trajectories: A JAX tree with the same structure as input, but reshaped into
+                     MINIBATCHES number of batches, each of size (NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES)
+
+    Notes:
+        - The function assumes global constants NUM_ENVS, ROLLOUT_LENGTH, and MINIBATCHES are defined
+        - Uses JAX's tree_map to handle nested structure of trajectory data
+        - The function is JIT-compiled for better performance
+    """
     size = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
     state = trajectories[0]
-    new_state = trajectories[5]
-    
-    # Shuffling and batching state and new_state:   
 
-    all_state_features = jnp.concatenate([
-            state.nodes.reshape(state.nodes.shape[0] * state.nodes.shape[1], -1),
-            state.edges.reshape(state.edges.shape[0] * state.edges.shape[1], -1),
-            state.senders.reshape(state.edges.shape[0] * state.edges.shape[1], -1), 
-            state.receivers.reshape(state.edges.shape[0] * state.edges.shape[1], -1),
-            state.globals.reshape(state.edges.shape[0] * state.edges.shape[1], -1)
-        ], axis=-1)
-    
-    node_index = state.nodes.shape[-1]
-    edge_index = node_index + state.edges.shape[-2] * state.edges.shape[-1]
-    senders_index = edge_index + state.senders.shape[-1]
-    receivers_index = senders_index + state.receivers.shape[-1]
-    globals_index = receivers_index + state.globals.shape[-1]
+    lead_axis_dimension = state.nodes.shape[0] * state.nodes.shape[1]
+    shuffled_indices = jrand.permutation(key, jnp.arange(lead_axis_dimension))
 
-    node_index_new = globals_index + new_state.nodes.shape[-1]
-    edge_index_new = node_index_new + new_state.edges.shape[-2] * new_state.edges.shape[-1]
-    senders_index_new = edge_index_new + new_state.senders.shape[-1]
-    receivers_index_new = senders_index_new + new_state.receivers.shape[-1]
-    globals_index_new = receivers_index_new + new_state.globals.shape[-1]
-    
-    all_new_state_features = jnp.concatenate([
-            new_state.nodes.reshape(new_state.nodes.shape[0] * new_state.nodes.shape[1], -1),
-            new_state.edges.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1),
-            new_state.senders.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1), 
-            new_state.receivers.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1),
-            new_state.globals.reshape(new_state.edges.shape[0] * new_state.edges.shape[1], -1)
-        ], axis=-1)
-    
-    gathered_state_features = jnp.concatenate([all_state_features, all_new_state_features], axis=-1)
+    trajectories = jax.tree_map(lambda x: x.reshape(lead_axis_dimension, *x.shape[2:]), trajectories)
+    trajectories = jax.tree_map(lambda x: jnp.take(x, shuffled_indices, axis=0), trajectories)
+    trajectories = jax.tree_map(lambda x: x.reshape(MINIBATCHES, size, *x.shape[1:]), trajectories)
 
-    permuted_state_features = jrand.permutation(key, gathered_state_features, axis=0)
-
-    rebatched_state_nodes = permuted_state_features[:, 0:node_index].reshape(MINIBATCHES, size, -1)
-    rebatched_state_edges = permuted_state_features[:, node_index:edge_index].reshape(MINIBATCHES, size, -1, state.edges.shape[-1])
-    rebatched_state_senders = permuted_state_features[:, edge_index:senders_index].reshape(MINIBATCHES, size, -1)
-    rebatched_state_receivers = permuted_state_features[:, senders_index:receivers_index].reshape(MINIBATCHES, size, -1)
-    rebatched_state_n_node = state.n_node.reshape(MINIBATCHES, size)
-    rebatched_state_n_edge = state.n_edge.reshape(MINIBATCHES, size)
-    rebatched_state_globals = permuted_state_features[:, receivers_index:globals_index].reshape(MINIBATCHES, size, -1)
-    
-    state = jraph.GraphsTuple(
-        nodes=rebatched_state_nodes,
-        edges=rebatched_state_edges,
-        senders=rebatched_state_senders,
-        receivers=rebatched_state_receivers,
-        n_node=rebatched_state_n_node,
-        n_edge=rebatched_state_n_edge,
-        globals=rebatched_state_globals
-    )
-
-    rebatched_new_state_nodes = permuted_state_features[:, globals_index:node_index_new].reshape(MINIBATCHES, size, -1)
-    rebatched_new_state_edges = permuted_state_features[:, node_index_new:edge_index_new].reshape(MINIBATCHES, size, -1, new_state.edges.shape[-1])
-    rebatched_new_state_senders = permuted_state_features[:, edge_index_new:senders_index_new].reshape(MINIBATCHES, size, -1)
-    rebatched_new_state_receivers = permuted_state_features[:, senders_index_new:receivers_index_new].reshape(MINIBATCHES, size, -1)
-    rebatched_new_state_n_node = new_state.n_node.reshape(MINIBATCHES, size)
-    rebatched_new_state_n_edge = new_state.n_edge.reshape(MINIBATCHES, size)
-    rebatched_new_state_globals = permuted_state_features[:, receivers_index_new:globals_index_new].reshape(MINIBATCHES, size, -1)
-
-    new_state = jraph.GraphsTuple(
-        nodes=rebatched_new_state_nodes,
-        edges=rebatched_new_state_edges,
-        senders=rebatched_new_state_senders,
-        receivers=rebatched_new_state_receivers,
-        n_node=rebatched_new_state_n_node,
-        n_edge=rebatched_new_state_n_edge,
-        globals=rebatched_new_state_globals
-    )
-
-    # Shuffling and batching the rest of the trajectory:
-
-    traj_rest = (*trajectories[1:5], *trajectories[6:])
-    traj_rest = jnp.concatenate(traj_rest, axis=-1)
-    traj_rest = traj_rest.reshape(-1, traj_rest.shape[-1])
-    traj_rest = jrand.permutation(key, traj_rest, axis=0)
-    traj_rest = traj_rest.reshape(MINIBATCHES, size, traj_rest.shape[-1])
-
-    traj_idx_1 = trajectories[1].shape[-1]
-    traj_idx_2 = traj_idx_1 + trajectories[2].shape[-1]
-    traj_idx_3 = traj_idx_2 + trajectories[3].shape[-1]
-    traj_idx_4 = traj_idx_3 + trajectories[4].shape[-1]
-    traj_idx_6 = traj_idx_4 + trajectories[6].shape[-1]
-    traj_idx_7 = traj_idx_6 + trajectories[7].shape[-1]
-    traj_idx_8 = traj_idx_7 + trajectories[8].shape[-1]
-    traj_idx_9 = traj_idx_8 + trajectories[9].shape[-1]
-
-    new_trajectories = (
-        state,
-        traj_rest[:, :, 0:traj_idx_1],
-        traj_rest[:, :, traj_idx_1:traj_idx_2],
-        traj_rest[:, :, traj_idx_2:traj_idx_3],
-        traj_rest[:, :, traj_idx_3:traj_idx_4],
-        new_state,
-        traj_rest[:, :, traj_idx_4:traj_idx_6],
-        traj_rest[:, :, traj_idx_6:traj_idx_7],
-        traj_rest[:, :, traj_idx_7:traj_idx_8],
-        traj_rest[:, :, traj_idx_8:traj_idx_9],
-    )
-
-    return new_trajectories
+    return trajectories
 
 
 def init_carry_sparse(keys):
@@ -368,21 +305,14 @@ def rollout_fn(network, rollout_length, init_carry, key):
         # mask = 1. - state.at[1, 0, :].get()
         mask = 1. - jnp.squeeze(state.nodes)
 
-        # output = network(state, key=net_key)
-        # value = output[0]
-        # logits = output[1:]
         action_logits, state_value_estimate = network(state, key=net_key)
         prob_dist = jnn.softmax(action_logits, axis=-1, where=mask)
                 
         distribution = distrax.Categorical(probs=prob_dist)
         action = distribution.sample(seed=act_key)
-        print(action.shape)        
-        # next_state, reward, done = step(state, action)
+
         next_state, reward, done = step_sparse(state, action)
         discount = 1.
-        # next_output = network(next_state, key=next_net_key)
-        # next_value = next_output[0]
-        # next_logits = next_output[1:]
 
         next_logits, next_value = network(next_state, key=next_net_key)
         
@@ -404,19 +334,17 @@ def rollout_fn(network, rollout_length, init_carry, key):
 
 def loss(network, trajectories, keys):
     state = trajectories[0]
-    state = state.reshape(-1, *graph.shape)
     actions = jnp.squeeze(trajectories[1])
     actions = jnp.int32(actions)
     
     rewards = jnp.squeeze(trajectories[2])
     next_state = trajectories[5]
-    next_state = next_state.reshape(-1, *graph.shape)
     
-    old_prob_dist = trajectories[:, 2*OBS_SHAPE+4:2*OBS_SHAPE+NUM_ACTIONS+4]
-    discounts = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+4]
-    episodic_returns = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+5]
-    returns = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+6]
-    advantages = trajectories[:, 2*OBS_SHAPE+NUM_ACTIONS+7]
+    old_prob_dist = trajectories[7]
+    discounts = jnp.squeeze(trajectories[8])
+    episodic_returns = jnp.squeeze(trajectories[9])
+    returns = jnp.squeeze(trajectories[10])
+    advantages = jnp.squeeze(trajectories[11])
     
     log_probs, prob_dist, values, entropies = get_log_probs_and_value(network, state, actions, keys)
     _, _, next_values, _ = get_log_probs_and_value(network, next_state, actions, keys)
@@ -462,7 +390,7 @@ def test_agent(network, rollout_length, keys):
     returns = get_returns(trajectories)
     best_return = jnp.max(returns[:, 0], axis=-1)
     idx = jnp.argmax(returns[:, 0], axis=-1)
-    best_act_seq = trajectories[idx, :, OBS_SHAPE]
+    best_act_seq = jnp.squeeze(trajectories[1])[idx, :]
     return best_return, best_act_seq, returns[:, 0]
 
 
@@ -502,7 +430,8 @@ for episode in pbar:
     # environments
     for i in range(MINIBATCHES):
         subkeys = jrand.split(key, MINIBATCHSIZE)
-        model, opt_state, metrics = train_agent(model, opt_state, batches[i], subkeys)   
+        batch_ = jax.tree_map(lambda x: x[i], batches)
+        model, opt_state, metrics = train_agent(model, opt_state, batch_, subkeys)   
     samplecounts += NUM_ENVS*ROLLOUT_LENGTH
     
     kl_div, policy_entropy, fit_quality, explained_var, ppo_loss, value_loss, entropy_loss, total_loss, clipping_trigger_ratio = metrics
