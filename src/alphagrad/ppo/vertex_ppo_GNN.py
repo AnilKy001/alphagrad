@@ -34,7 +34,7 @@ from alphagrad.GNN.graph_utils import graph_sparsify
 
 # jax.config.update("jax_disable_jit", True)
 
-DEBUG = 1
+DEBUG = 0
 
 parser = argparse.ArgumentParser()
 
@@ -108,6 +108,7 @@ model = PPOModelGNN(
     init_node_feature_shape=1,
     edge_feature_shapes=[16, 32],
     node_feature_shapes=[16, 32],
+    num_nodes=sparse_graph.n_node[0],
     key=key
 )
 
@@ -133,7 +134,6 @@ def init_weight(model, init_fn, key):
 
 # Initialization could help with performance
 model = init_weight(model, init_fn, init_key)
-
 
 run_config = {"seed": args.seed,
                 "entropy_weight": ENTROPY_WEIGHT, 
@@ -314,20 +314,20 @@ def rollout_fn(network, rollout_length, init_carry, key):
         next_state, reward, done = step_sparse(state, action)
         discount = 1.
 
-        next_logits, next_value = network(next_state, key=next_net_key)
+        next_logits, next_state_value_estimate = network(next_state, key=next_net_key)
         
         new_sample = (
             state, 
             jnp.array([action]), 
             jnp.array([reward]), 
             jnp.array([done]), 
-            jnp.array([state_value_estimate]),
+            state_value_estimate,
             next_state, 
-            jnp.array([next_value]), 
+            next_state_value_estimate, 
             prob_dist, 
             jnp.array([discount]))
          
-        return next_state, new_sample
+        return next_state, (new_sample, prob_dist, action_logits)
     
     return lax.scan(step_fn, init_carry, keys)
 
@@ -377,6 +377,7 @@ def loss(network, trajectories, keys):
 
 @eqx.filter_jit
 def train_agent(network, opt_state, trajectories, keys):  
+    # with jax.disable_jit():
     grads, metrics = eqx.filter_grad(loss, has_aux=True)(network, trajectories, keys)   
     updates, opt_state = optim.update(grads, opt_state)
     network = eqx.apply_updates(network, updates)
@@ -387,6 +388,7 @@ def train_agent(network, opt_state, trajectories, keys):
 def test_agent(network, rollout_length, keys):
     env_carry = init_carry_sparse(keys)
     _, trajectories = rollout_fn(network, rollout_length, env_carry, keys)
+    trajectories, prob_dist, action_logits = trajectories
     returns = get_returns(trajectories)
     best_return = jnp.max(returns[:, 0], axis=-1)
     idx = jnp.argmax(returns[:, 0], axis=-1)
@@ -417,8 +419,9 @@ for episode in pbar:
     subkey, key = jrand.split(key, 2)
     keys = jrand.split(key, NUM_ENVS)  
     env_carry = jax.jit(init_carry_sparse)(keys)
-
+    
     env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, keys)
+    trajectories, prob_dist, action_logits = trajectories 
 
     trajectories = get_advantages(trajectories)
 
