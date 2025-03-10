@@ -173,8 +173,9 @@ class PPOModelGNN(eqx.Module):
     and value networks.
     """
 
-    policy_net: EdgeGATNetwork
-    value_net: EdgeGATNetwork
+    GAT_net: eqx.Module
+    value_net: eqx.nn.Sequential
+    policy_net: eqx.nn.Sequential
     
     def __init__(
             self,
@@ -183,11 +184,14 @@ class PPOModelGNN(eqx.Module):
             init_node_feature_shape: int,
             edge_feature_shapes: Sequence[int],
             node_feature_shapes: Sequence[int],
+            num_nodes: int,
             key: PRNGKey
     ) -> None:
         super().__init__()
         policy_key, value_key = jrand.split(key, 2)
-        self.policy_net = EdgeGATNetwork(
+        val1_ley, val2_key, val3_key = jrand.split(value_key, 3)
+
+        self.GAT_net = EdgeGATNetwork(
                 edge_sparsity_embedding_size, 
                 init_edge_feature_shape, 
                 init_node_feature_shape, 
@@ -195,27 +199,41 @@ class PPOModelGNN(eqx.Module):
                 node_feature_shapes, 
                 policy_key
         )
-        self.value_net = EdgeGATNetwork(
-                edge_sparsity_embedding_size, 
-                init_edge_feature_shape, 
-                init_node_feature_shape, 
-                edge_feature_shapes, 
-                node_feature_shapes, 
-                value_key
-        )
+
+        out_node_feature_shape = node_feature_shapes[-1]
+
+        ravel_node_features_shape = num_nodes * out_node_feature_shape
+
+        self.policy_net = eqx.nn.Sequential([
+            eqx.nn.Linear(out_node_feature_shape, 64, key=val1_ley),
+            eqx.nn.Linear(64, 32, key=val2_key),
+            eqx.nn.Linear(32, 1, key=val3_key)
+        ])
+
+        self.value_net = eqx.nn.Sequential([
+            eqx.nn.Linear(ravel_node_features_shape, 128, key=val1_ley),
+            eqx.nn.Linear(128, 64, key=val2_key),
+            eqx.nn.Linear(64, 1, key=val3_key)
+        ])
+
     
-    def __call__(self, sparse_graph: GraphsTuple, key: PRNGKey) -> Array:
+    def __call__(self, sparse_graph: GraphsTuple) -> Array:
 
         elimination_mask = sparse_graph.nodes
-        elimination_mask = jnp.squeeze(elimination_mask)
+        elimination_mask = 1. - jnp.squeeze(elimination_mask)
 
-        action_logits_unmasked = self.policy_net(sparse_graph)
-        action_logits = jnp.where(elimination_mask > 0, -jnp.inf, action_logits_unmasked)
+        node_features = self.GAT_net(sparse_graph)
 
-        state_values = self.value_net(sparse_graph)
-        state_value_estimate = jnp.mean(state_values)
+        node_elimination_vals = jax.vmap(self.policy_net, in_axes=(0))(node_features)
+        node_elimination_vals = jnp.squeeze(node_elimination_vals)
+        node_elimination_logits = jnp.where(elimination_mask == 0., -jnp.inf, node_elimination_vals)
+        action_prob_dist = jnn.softmax(node_elimination_logits, axis=0)
 
-        return action_logits, state_value_estimate
+
+        ravel_node_features = node_features.ravel()
+        state_value_estimate = self.value_net(ravel_node_features)
+
+        return action_prob_dist, state_value_estimate
 
 class AlphaZeroModel(eqx.Module):
     embedding: eqx.nn.Conv2d

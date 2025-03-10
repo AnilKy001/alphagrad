@@ -106,11 +106,16 @@ model = PPOModelGNN(
     edge_sparsity_embedding_size=4,
     init_edge_feature_shape=5,
     init_node_feature_shape=1,
-    edge_feature_shapes=[16, 32],
-    node_feature_shapes=[16, 32],
+    edge_feature_shapes=[24, 48],
+    node_feature_shapes=[24, 48],
     num_nodes=sparse_graph.n_node[0],
     key=key
 )
+"""
+Edge feature shape: 5
+Node feature shape: 1
+Embedded edge sparsity shape: 4
+"""
 
 
 init_fn = jnn.initializers.orthogonal(jnp.sqrt(2))
@@ -172,13 +177,11 @@ def get_num_clipping_triggers(ratio):
     return jnp.sum(_ratio)
 
 
-@partial(jax.vmap, in_axes=(None, 0, 0, 0))
-def get_log_probs_and_value(network, state, action, key):
-    mask = 1. - jnp.squeeze(state.nodes)
-    logits, value = network(state, key=key)
-    prob_dist = jnn.softmax(logits, axis=-1, where=mask)
-
+@partial(jax.vmap, in_axes=(None, 0, 0))
+def get_log_probs_and_value(network, state, action):
+    prob_dist, value = network(state)
     log_prob = jnp.log(prob_dist[action] + 1e-7)
+
     return log_prob, prob_dist, value, entropy(prob_dist)
 
 
@@ -305,8 +308,7 @@ def rollout_fn(network, rollout_length, init_carry, key):
         # mask = 1. - state.at[1, 0, :].get()
         mask = 1. - jnp.squeeze(state.nodes)
 
-        action_logits, state_value_estimate = network(state, key=net_key)
-        prob_dist = jnn.softmax(action_logits, axis=-1, where=mask)
+        prob_dist, state_value_estimate = network(state)
                 
         distribution = distrax.Categorical(probs=prob_dist)
         action = distribution.sample(seed=act_key)
@@ -314,7 +316,7 @@ def rollout_fn(network, rollout_length, init_carry, key):
         next_state, reward, done = step_sparse(state, action)
         discount = 1.
 
-        next_logits, next_state_value_estimate = network(next_state, key=next_net_key)
+        next_logits, next_state_value_estimate = network(next_state)
         
         new_sample = (
             state, 
@@ -327,7 +329,7 @@ def rollout_fn(network, rollout_length, init_carry, key):
             prob_dist, 
             jnp.array([discount]))
          
-        return next_state, (new_sample, prob_dist, action_logits)
+        return next_state, (new_sample)
     
     return lax.scan(step_fn, init_carry, keys)
 
@@ -346,8 +348,8 @@ def loss(network, trajectories, keys):
     returns = jnp.squeeze(trajectories[10])
     advantages = jnp.squeeze(trajectories[11])
     
-    log_probs, prob_dist, values, entropies = get_log_probs_and_value(network, state, actions, keys)
-    _, _, next_values, _ = get_log_probs_and_value(network, next_state, actions, keys)
+    log_probs, prob_dist, values, entropies = get_log_probs_and_value(network, state, actions)
+    _, _, next_values, _ = get_log_probs_and_value(network, next_state, actions)
     norm_adv = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + 1e-7)
     
     # Losses
@@ -377,8 +379,7 @@ def loss(network, trajectories, keys):
 
 @eqx.filter_jit
 def train_agent(network, opt_state, trajectories, keys):  
-    # with jax.disable_jit():
-    grads, metrics = eqx.filter_grad(loss, has_aux=True)(network, trajectories, keys)   
+    grads, metrics = eqx.filter_grad(loss, has_aux=True)(network, trajectories, keys)  
     updates, opt_state = optim.update(grads, opt_state)
     network = eqx.apply_updates(network, updates)
     return network, opt_state, metrics
@@ -388,7 +389,6 @@ def train_agent(network, opt_state, trajectories, keys):
 def test_agent(network, rollout_length, keys):
     env_carry = init_carry_sparse(keys)
     _, trajectories = rollout_fn(network, rollout_length, env_carry, keys)
-    trajectories, prob_dist, action_logits = trajectories
     returns = get_returns(trajectories)
     best_return = jnp.max(returns[:, 0], axis=-1)
     idx = jnp.argmax(returns[:, 0], axis=-1)
@@ -421,7 +421,6 @@ for episode in pbar:
     env_carry = jax.jit(init_carry_sparse)(keys)
     
     env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, keys)
-    trajectories, prob_dist, action_logits = trajectories 
 
     trajectories = get_advantages(trajectories)
 
