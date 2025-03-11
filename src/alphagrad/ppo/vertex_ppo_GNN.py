@@ -292,14 +292,15 @@ def shuffle_and_batch(trajectories, key):
 
 
 def init_carry_sparse(keys):
-    graphs_seq = [sparse_graph for _ in range(len(keys))]
-    graphs_batch = jraph.batch(graphs_seq)
-
+    # graphs_seq = [sparse_graph for _ in range(len(keys))]
+    # graphs_batch1 = jraph.batch(graphs_seq)
+    graphs_batch = jax.tree_map(lambda x: jnp.tile(x, (32, *[1 for _ in range(len(x.shape[1:]))])), sparse_graph)
+    
     return graphs_batch
 
 
 # Implementation of the RL algorithm
-@eqx.filter_jit
+# @eqx.filter_jit
 @partial(jax.vmap, in_axes=(None, None, 0, 0))
 def rollout_fn(network, rollout_length, init_carry, key):
     keys = jrand.split(key, rollout_length)
@@ -328,10 +329,12 @@ def rollout_fn(network, rollout_length, init_carry, key):
             next_state_value_estimate, 
             prob_dist, 
             jnp.array([discount]))
-         
+        
         return next_state, (new_sample)
     
-    return lax.scan(step_fn, init_carry, keys)
+    scan_out = lax.scan(step_fn, init_carry, keys)
+    
+    return scan_out
 
 
 def loss(network, trajectories, keys):

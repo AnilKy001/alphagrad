@@ -82,12 +82,14 @@ class EdgeGATLayer(eqx.Module):
 
     def __call__(self, graph: jr.GraphsTuple, key: PRNGKey) -> jr.GraphsTuple:
         
-        return jr.GraphNetGAT(
+        new_graph = jr.GraphNetGAT(
             update_edge_fn=self.update_edge_fn,
             update_node_fn=self.update_node_fn,
             attention_logit_fn=self.attention_logit_fn,
             attention_reduce_fn=self.attention_reduce_fn
         )(graph)
+
+        return new_graph
         
 
 
