@@ -231,7 +231,7 @@ def get_advantages(trajectories):
         
         next_carry = (episodic_return, advantage)
         new_sample = jnp.array([episodic_return, estim_return, advantage])
-        
+            
         return next_carry, new_sample
     
     _, output = lax.scan(loop_fn, (0., 0.), inputs[::-1])
@@ -319,9 +319,8 @@ def rollout_fn(network, rollout_length, init_carry, key):
             next_state_value_estimate, 
             prob_dist, 
             jnp.array([discount]))
-        
+            
         return next_state, (new_sample)
-    
     scan_out = lax.scan(step_fn, init_carry, keys)
     
     return scan_out

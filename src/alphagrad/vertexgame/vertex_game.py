@@ -59,8 +59,9 @@ def step(edges: Array, action: int) -> EnvOut:
 
 def step_sparse(sparse_graph: GraphsTuple, action: int) -> EnvOutSparse:
     new_graph = sparse_vertex_eliminate(action, sparse_graph)
+    old_nops = jnp.squeeze(sparse_graph.globals)
     nops = jnp.squeeze(new_graph.globals)
-    reward = -nops
+    reward = -(nops - old_nops)
     terminated = lax.select(jnp.prod(new_graph.nodes, axis=-1) == 0., False, True) # If all node masks are 1, the game is terminated.
 
     return new_graph, reward, terminated

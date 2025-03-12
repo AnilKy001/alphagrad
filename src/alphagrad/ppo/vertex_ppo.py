@@ -27,7 +27,7 @@ from alphagrad.vertexgame import step
 from alphagrad.utils import symlog, symexp, entropy, explained_variance
 from alphagrad.transformer.models import PPOModel
 
-DEBUG = 0
+DEBUG = 1
 
 parser = argparse.ArgumentParser()
 
