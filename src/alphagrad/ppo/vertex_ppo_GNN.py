@@ -32,8 +32,6 @@ from alphagrad.transformer.models import PPOModel, PPOModelGNN
 
 from alphagrad.GNN.graph_utils import graph_sparsify
 
-# jax.config.update("jax_disable_jit", True)
-
 DEBUG = 0
 
 parser = argparse.ArgumentParser()
@@ -95,19 +93,12 @@ OBS_SHAPE = reduce(lambda x, y: x*y, graph.shape)
 NUM_ACTIONS = graph.shape[-1] # ROLLOUT_LENGTH # TODO fix this
 MINIBATCHSIZE = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
 
-# model = PPOModel(graph_shape, 64, 6, 8,
-#                 ff_dim=256,
-#                 num_layers_policy=2,
-#                 policy_ff_dims=[256, 256],
-#                 value_ff_dims=[256, 128, 64], 
-#                 key=key)
-
 model = PPOModelGNN(
     edge_sparsity_embedding_size=4,
     init_edge_feature_shape=5,
     init_node_feature_shape=1,
-    edge_feature_shapes=[24, 48],
-    node_feature_shapes=[24, 48],
+    edge_feature_shapes=[32, 32],
+    node_feature_shapes=[32, 32],
     num_nodes=sparse_graph.n_node[0],
     key=key
 )
@@ -116,7 +107,6 @@ Edge feature shape: 5
 Node feature shape: 1
 Embedded edge sparsity shape: 4
 """
-
 
 init_fn = jnn.initializers.orthogonal(jnp.sqrt(2))
 
@@ -300,7 +290,7 @@ def init_carry_sparse(keys):
 
 
 # Implementation of the RL algorithm
-# @eqx.filter_jit
+@eqx.filter_jit
 @partial(jax.vmap, in_axes=(None, None, 0, 0))
 def rollout_fn(network, rollout_length, init_carry, key):
     keys = jrand.split(key, rollout_length)
