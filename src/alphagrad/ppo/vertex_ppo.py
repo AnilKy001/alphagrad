@@ -27,7 +27,7 @@ from alphagrad.vertexgame import step
 from alphagrad.utils import symlog, symexp, entropy, explained_variance
 from alphagrad.transformer.models import PPOModel
 
-DEBUG = 1
+DEBUG = 0
 
 parser = argparse.ArgumentParser()
 
@@ -355,7 +355,6 @@ for episode in pbar:
     keys = jrand.split(key, NUM_ENVS)  
     env_carry = jax.jit(init_carry)(keys)
     env_carry, trajectories = rollout_fn(model, ROLLOUT_LENGTH, env_carry, keys)
-    print("trajectories shape:", trajectories.shape) #(32, 98, 109186)
     
     trajectories = get_advantages(trajectories) # (32, 98, 109189)
     batches = shuffle_and_batch(trajectories, subkey)
