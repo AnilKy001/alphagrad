@@ -97,8 +97,8 @@ model = PPOModelGNN(
     edge_sparsity_embedding_size=4,
     init_edge_feature_shape=5,
     init_node_feature_shape=1,
-    edge_feature_shapes=[32, 32],
-    node_feature_shapes=[32, 32],
+    edge_feature_shapes=[32, 64, 64, 64],
+    node_feature_shapes=[32, 64, 64, 64],
     num_nodes=sparse_graph.n_node[0],
     key=key
 )
