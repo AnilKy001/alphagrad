@@ -432,7 +432,11 @@ for episode in pbar:
     kl_div, policy_entropy, fit_quality, explained_var, ppo_loss, value_loss, entropy_loss, total_loss, clipping_trigger_ratio = metrics
     
     test_keys = jrand.split(key, NUM_ENVS)
-    best_return, best_act_seq, returns = test_agent(model, 98, test_keys)
+    best_return, best_act_seq_with_offset, returns = test_agent(model, 98, test_keys)
+
+    best_act_seq = []
+    for elem_ in best_act_seq_with_offset:
+        best_act_seq.append(elem_ - 5)
     
     if best_return > best_global_return:
         best_global_return = best_return
