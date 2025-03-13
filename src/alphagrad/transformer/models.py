@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Sequence, Union
 
 import jax
 import jax.nn as jnn
@@ -184,7 +184,7 @@ class PPOModelGNN(eqx.Module):
             init_node_feature_shape: int,
             edge_feature_shapes: Sequence[int],
             node_feature_shapes: Sequence[int],
-            num_nodes: int,
+            num_nodes: Union[int, Array],
             key: PRNGKey
     ) -> None:
         super().__init__()
@@ -203,7 +203,7 @@ class PPOModelGNN(eqx.Module):
 
         out_node_feature_shape = node_feature_shapes[-1]
 
-        ravel_node_features_shape = num_nodes * out_node_feature_shape
+        ravel_node_features_shape = int(num_nodes) * out_node_feature_shape
 
         self.policy_net = eqx.nn.Sequential([
             eqx.nn.Linear(out_node_feature_shape, 1024, key=pol_keys[0]),
