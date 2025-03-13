@@ -207,17 +207,25 @@ class PPOModelGNN(eqx.Module):
 
         self.policy_net = eqx.nn.Sequential([
             eqx.nn.Linear(out_node_feature_shape, 1024, key=pol_keys[0]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(1024, 512, key=pol_keys[1]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(512, 256, key=pol_keys[2]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(256, 128, key=pol_keys[3]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(128, 1, key=pol_keys[4])
         ])
 
         self.value_net = eqx.nn.Sequential([
             eqx.nn.Linear(ravel_node_features_shape, 1024, key=val_keys[0]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(1024, 512, key=val_keys[1]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(512, 256, key=val_keys[2]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(256, 128, key=val_keys[3]),
+            eqx.nn.Lambda(jnn.relu),
             eqx.nn.Linear(128, 1, key=val_keys[4])
         ])
 

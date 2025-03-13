@@ -455,7 +455,6 @@ def test_agent(network, rollout_length, keys):
     env_carry = init_carry(keys)
     _, trajectories = rollout_fn(network, rollout_length, env_carry, keys[0])
     returns = get_returns(trajectories)
-    print(returns)
     best_return = jnp.max(returns[:, 0], axis=-1)
     idx = jnp.argmax(returns[:, 0], axis=-1)
     best_act_seq = trajectories[idx, :, OBS_SHAPE]

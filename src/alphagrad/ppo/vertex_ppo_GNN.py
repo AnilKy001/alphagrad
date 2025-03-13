@@ -357,7 +357,8 @@ def loss(network, trajectories, keys):
     value_loss = jnp.mean((values - reward_normalization_fn(returns))**2)
     
     # Metrics
-    dV = returns - rewards - discounts*inverse_reward_normalization_fn(next_values) # assess fit quality
+    inv_reward_norm = inverse_reward_normalization_fn(next_values)
+    dV = returns - rewards - discounts*inv_reward_norm # assess fit quality
     fit_quality = jnp.mean(jnp.abs(dV))
     explained_var = explained_variance(advantages, returns)
     kl_div = jnp.mean(optax.kl_divergence(jnp.log(prob_dist + 1e-7), old_prob_dist))
