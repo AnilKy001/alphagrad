@@ -40,7 +40,7 @@ parser.add_argument("--name", type=str,
                     default="Test", help="Name of the experiment.")
 
 parser.add_argument("--task", type=str,
-                    default="RoeFlux_3d", help="Name of the task to run.")
+                    default="Encoder", help="Name of the task to run.")
 
 parser.add_argument("--gpus", type=str, 
                     default="0", help="GPU ID's to use for training.")
@@ -78,7 +78,8 @@ GAE_LAMBDA = parameters["ppo"]["gae_lambda"]
 EPS = parameters["ppo"]["clip_param"]
 MINIBATCHES = parameters["ppo"]["num_minibatches"]
 
-ROLLOUT_LENGTH = parameters["ppo"]["rollout_length"]
+# ROLLOUT_LENGTH = parameters["ppo"]["rollout_length"]
+ROLLOUT_LENGTH = jnp.argwhere(sparse_graph.nodes == 0).shape[0]
 OBS_SHAPE = reduce(lambda x, y: x*y, graph.shape)
 NUM_ACTIONS = graph.shape[-1] # ROLLOUT_LENGTH # TODO fix this
 MINIBATCHSIZE = NUM_ENVS*ROLLOUT_LENGTH//MINIBATCHES
@@ -422,7 +423,7 @@ for episode in pbar:
     kl_div, policy_entropy, fit_quality, explained_var, ppo_loss, value_loss, entropy_loss, total_loss, clipping_trigger_ratio = metrics
     
     test_keys = jrand.split(key, NUM_ENVS)
-    best_return, best_act_seq, returns = test_agent(model, 143, test_keys)
+    best_return, best_act_seq, returns = test_agent(model, ROLLOUT_LENGTH, test_keys)
 
     if best_return > best_global_return:
         best_global_return = best_return
@@ -449,6 +450,9 @@ for episode in pbar:
     pbar.set_description(f"entropy: {policy_entropy:.4f}, best_return: {best_return}, mean_return: {jnp.mean(returns)}, fit_quality: {fit_quality:.2f}, expl_var: {explained_var:.4}, kl_div: {kl_div:.4f}")
         
 wandb.log({"Elimination order": elim_order_table})
-vertex_elimination_order = [int(i) for i in best_act_seq]
+vertex_elimination_order_with_offset = [int(i) for i in best_act_seq]
+# Remove the offset resulting from the sparse representation:
+vertex_elimination_order_offset = min(vertex_elimination_order_with_offset) - 1
+vertex_elimination_order = [x - vertex_elimination_order_offset for x in vertex_elimination_order_with_offset]
 print(f"Best vertex elimination sequence after {EPISODES} episodes is {vertex_elimination_order} with {best_global_return} multiplications.")
 

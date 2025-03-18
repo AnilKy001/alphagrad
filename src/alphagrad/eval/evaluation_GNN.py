@@ -15,7 +15,7 @@ from tqdm import tqdm
 import time
 import timeit
 
-from graphax.perf import plot_performance_with_GNN, plot_performance_over_size_jax_GNN, measure
+# from graphax.perf import plot_performance_with_GNN, plot_performance_over_size_jax_with_GNN, measure
 from graphax.core import jacve
 from graphax.examples import (
     RoeFlux_1d,
@@ -56,7 +56,9 @@ def measure_exec_time(f: Callable, args: Sequence[Array], elim_order: Order, num
         
         return min(execution_times[1:]) / (number-1)
     
-    measurements = [sample_time(args)*1000 for i in tqdm(range(num_samples))] # conversion to ms
+    sample_time_batch = jax.vmap(sample_time, in_axes=(0, None, None))
+        
+    measurements = [sample_time(args, 10, 10)*1000 for i in tqdm(range(num_samples))] # conversion to ms
 
     measurements = jnp.array(measurements)[10:]
     median = jnp.median(measurements)
@@ -176,16 +178,84 @@ def exp_BlackScholes():
     order_GNN = []
     return
 
-def exp_Encoder():
+def exp_Encoder(num_samples: int = 1000):
 
     # Minimal Markowitz elimination order:
-    order_mM = []
+    order_mM = [7, 6, 8, 47, 46, 48, 81, 80, 82, 11, 16, 20, 21, 22, 25, 29, 31, 36, 
+            51, 56, 60, 61, 62, 65, 69, 71, 75, 85, 88, 90, 89, 9, 12, 10, 26, 
+            37, 38, 39, 49, 52, 50, 66, 76, 77, 78, 79, 83, 86, 84, 87, 24, 35, 
+            64, 15, 55, 33, 74, 73, 4, 13, 17, 27, 34, 44, 53, 57, 67, 19, 59, 
+            1, 2, 3, 18, 23, 41, 42, 43, 58, 63, 30, 70, 28, 68, 5, 45, 32, 14, 
+            54, 72, 40]
 
     # Alphagrad with transformers in PPO network elimination order:
-    order_trans = []
+    order_trans = [60, 81, 8, 59, 58, 41, 69, 85, 1, 46, 25, 51, 37, 17, 56, 22, 12, 75, 
+         78, 82, 7, 66, 47, 64, 20, 88, 65, 31, 38, 6, 63, 71, 87, 19, 90, 24, 
+         80, 83, 27, 48, 77, 49, 29, 23, 76, 9, 79, 67, 61, 26, 89, 86, 18, 34, 
+         39, 84, 74, 70, 30, 36, 35, 72, 50, 73, 68, 62, 57, 28, 5, 55, 13, 11, 
+         54, 53, 43, 52, 45, 44, 42, 40, 33, 32, 21, 16, 15, 14, 3, 10, 4, 2]
 
     # Alphagrad with GNN in PPO network elimination order:
     order_GNN = []
+
+    order_GNN_offset = min(order_GNN) - 1
+    order_GNN = [x - order_GNN_offset for x in order_GNN]
+
+    scale_factor = 16
+
+    x = jnp.ones((scale_factor*4, scale_factor*4))
+    y = jrand.normal(key, (scale_factor*2, scale_factor*4))
+
+    wq1key, wk1key, wv1key, key = jrand.split(key, 4)
+    WQ1 = jrand.normal(wq1key, (scale_factor*4, scale_factor*4))
+    WK1 = jrand.normal(wk1key, (scale_factor*4, scale_factor*4))
+    WV1 = jrand.normal(wv1key, (scale_factor*4, scale_factor*4))
+
+    wq2key, wk2key, wv2key, key = jrand.split(key, 4)
+    WQ2 = jrand.normal(wq2key, (scale_factor*4, scale_factor*4))
+    WK2 = jrand.normal(wk2key, (scale_factor*4, scale_factor*4))
+    WV2 = jrand.normal(wv2key, (scale_factor*4, scale_factor*4))
+
+    w1key, w2key, b1key, b2key = jrand.split(key, 4)
+    W1 = jrand.normal(w1key, (scale_factor*4, scale_factor*4))
+    b1 = jrand.normal(b1key, (scale_factor*4,))
+
+    W2 = jrand.normal(w2key, (scale_factor*2, scale_factor*4))
+    b2 = jrand.normal(b2key, (scale_factor*2, 1))
+
+    xs = (x, y, WQ1, WQ2, WK1, WK2, WV1, WV2, W1, W2, b1, b2, jnp.array([0.]), jnp.array([1.]), jnp.array([0.]), jnp.array([1.]))
+
+    argnums = list(range(len(xs)))
+
+    meas_mM, med_mM = measure_exec_time(Encoder, xs, order_mM, num_samples=num_samples, argnums=argnums)
+    meas_trans, med_trans = measure_exec_time(Encoder, xs, order_trans, num_samples=num_samples, argnums=argnums)
+    meas_GNN, med_GNN = measure_exec_time(Encoder, xs, order_GNN, num_samples=num_samples, argnums=argnums)
+
+    plt.style.use("seaborn-v0_8-colorblind")
+    matplotlib.rc("font", **font)
+    matplotlib.rcParams['axes.linewidth'] = 1.5
+
+    fig, ax = plt.subplots()
+    fig.set_size_inches(8, 6)
+    ax.set_title("Transformer Execution Time Comparison")
+    x_pos = jnp.arange(num_samples-10)
+
+    ax.plot(x_pos, meas_mM, markersize=14, label="minimalMarkowitz", linewidth=line_width)
+    ax.plot(x_pos, meas_trans, markersize=14, label="PPO_Transformer", linewidth=line_width)
+    ax.plot(x_pos, meas_GNN, markersize=14, label="PPO_GNN", linewidth=line_width)
+    #ax.plot(t, rtrl, "-*", markersize=14, label="RTRL peak memory usage", linewidth=line_width)
+
+    ax.set_xlabel("Sample number")
+    ax.set_ylabel("Execution time [ms]")
+    ax.xaxis.label.set_size(20)
+    ax.yaxis.label.set_size(20)
+    ax.grid(True)
+    ax.tick_params(direction="in", which="both", width=2.)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig("exec_times_Transformer.png")
+
     return
 
 def exp_RoeFlux_3d(num_samples: int = 1000):
@@ -213,18 +283,35 @@ def exp_RoeFlux_3d(num_samples: int = 1000):
          7, 81, 97, 63, 44, 2, 33, 82, 26, 15, 17, 145] 
 
     # Alphagrad with GNN in PPO network elimination order:
-    order_GNN = []
+    order_GNN = [133, 94, 80, 106, 28, 118, 121, 83, 146, 64, 114, 113, 111, 107, 97, 
+                 37, 122, 140, 109, 61, 38, 85, 150, 143, 77, 137, 86, 79, 129, 53, 
+                 48, 119, 34, 142, 31, 59, 66, 39, 29, 33, 52, 105, 30, 70, 125, 43, 
+                 89, 10, 98, 126, 76, 60, 134, 101, 35, 69, 26, 115, 131, 82, 36, 65, 
+                 100, 58, 27, 95, 130, 99, 96, 139, 9, 144, 138, 63, 62, 8, 110, 92, 
+                 141, 87, 124, 73, 11, 44, 72, 50, 117, 14, 88, 42, 112, 51, 46, 116, 
+                 15, 91, 17, 90, 41, 128, 19, 132, 102, 135, 18, 123, 24, 54, 45, 71, 
+                 75, 20, 25, 93, 103, 108, 78, 13, 57, 12, 16, 120, 21, 47, 56, 67, 
+                 136, 127, 148, 81, 23, 74, 84, 55, 145, 104, 40, 6, 68, 32, 7, 22, 49]
+    
+    order_GNN_offset = min(order_GNN) - 1
+    order_GNN = [x - order_GNN_offset for x in order_GNN]
 
     shape = (512,)
-    key = jrand.PRNGKey(1234)
-    xs = [.01, .02, .02, .01, .03, .03]
-    xs = [jrand.uniform(key, shape)*x for x in xs]
+    batchsize = 512
+    ul0 = jnp.array([.1])
+    ul = jnp.array([.1, .2, .3])
+    ul4 = jnp.array([.5])
+    ur0 = jnp.array([.2])
+    ur = jnp.array([.2, .2, .4])
+    ur4 = jnp.array([.6])
+    xs = (ul0, ul, ul4, ur0, ur, ur4)
     xs = jax.device_put(xs, jax.devices("cpu")[0])
+
     argnums = list(range(len(xs)))
 
-    meas_mM, med_mM = measure_exec_time(RoeFlux_1d, xs, order_mM, num_samples=num_samples, argnums=argnums)
-    meas_trans, med_trans = measure_exec_time(RoeFlux_1d, xs, order_trans, num_samples=num_samples, argnums=argnums)
-    meas_GNN, med_GNN = measure_exec_time(RoeFlux_1d, xs, order_GNN, num_samples=num_samples, argnums=argnums)
+    meas_mM, med_mM = measure_exec_time(RoeFlux_3d, xs, order_mM, num_samples=num_samples, argnums=argnums)
+    meas_trans, med_trans = measure_exec_time(RoeFlux_3d, xs, order_trans, num_samples=num_samples, argnums=argnums)
+    meas_GNN, med_GNN = measure_exec_time(RoeFlux_3d, xs, order_GNN, num_samples=num_samples, argnums=argnums)
 
     plt.style.use("seaborn-v0_8-colorblind")
     matplotlib.rc("font", **font)
@@ -400,4 +487,4 @@ def make_time_plot_h(h, bptt, eprop, naive_eprop, rtrl):
     ax.set_ylabel("Time per step [ms]")
 
 
-exp_RoeFlux_1d(1000)
+exp_RoeFlux_3d(1000)
