@@ -335,7 +335,6 @@ def sparsity_fmas_map(in_edge, out_edge):
     # Get the sparsity type of the ingoing and outgoing edge
     i = in_edge[0].astype(jnp.int32) + OFFSET
     j = out_edge[0].astype(jnp.int32) + OFFSET
-
     new_sparsity_type = MUL_SPARSITY_MAP[i, j]                                                              
     contraction_map = CONTRACTION_MAP[:, i, j]
 
@@ -360,7 +359,6 @@ def get_fmas_jacprod(all_edges, fmas, in_edges, out_edges, nonzero, vertex, num_
     
     out_edges_primals = out_edges[3:, :]
     out_edges_outs = out_edges[1:3, :]
-        
     # Calculate fmas
     # Select only the edges that are connected to the vertex through code below
     new_sparsity, _fmas = sparsity_fmas_map(in_edges, out_edges[:, vertex+num_i-1])
@@ -395,7 +393,7 @@ def vertex_eliminate(vertex: int, graph: Array) -> Tuple[Array, float]:
 
     Arguments:
         vertex (int): Vertex we want to eliminate.
-        edges (Array): Matrix that describes the connectivity of the 
+        graph (Array): Matrix that describes the connectivity of the 
                         computational graph.
 
     Returns:

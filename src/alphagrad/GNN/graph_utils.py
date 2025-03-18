@@ -42,8 +42,8 @@ def graph_sparsify(dense_graph: Array) -> GraphsTuple:
         edges=edge_features,
         senders=edge_positions[0],
         receivers=edge_positions[1] + num_input_nodes,
-        n_node=len(node_features),
-        n_edge=len(edge_positions[0]),
+        n_node=jnp.array([len(node_features)]),
+        n_edge=jnp.array([len(edge_positions[0])]),
         globals=jnp.array([[0.]])
     )
 
@@ -52,7 +52,7 @@ def graph_sparsify(dense_graph: Array) -> GraphsTuple:
 
 def add_self_edges_fn(graph: GraphsTuple) -> GraphsTuple:
     """Adds self edges. Assumes self edges are not in the graph yet."""
-    total_num_nodes = graph.n_node
+    total_num_nodes = graph.n_node[0]
     graph._replace(receivers = jnp.concatenate((graph.receivers, jnp.arange(total_num_nodes)), axis=0))
     graph._replace(senders = jnp.concatenate((graph.senders, jnp.arange(total_num_nodes)), axis=0))
 
@@ -106,7 +106,7 @@ def sparse_mul(in_jac: Array, out_jac: Array) -> Tuple[float, Array]:
                                 factors)
 
     fmas = jnp.prod(masked_factors)
-    return fmas, jnp.concatenate([res_sparsity, in_jac[1:3], out_jac[3:]])
+    return fmas, jnp.concatenate([res_sparsity, out_jac[1:3], in_jac[3:]])
 
 
 def sparse_add(in_jac: Array, out_jac: Array) -> Array:
@@ -277,7 +277,7 @@ def add_edge(edge: Array,
         Tuple: Returns a tuple containing the updated counter variables, buffers
                 and state of the computational graph.
     """
-
+    # print("edge: ", edge)
     # Check if the edge we want to create aleady exists
     edge_exists = jnp.all(edge_conn == edge, axis=-1)
     existing_edge_idx = jnp.argwhere(edge_exists, size=1, fill_value=-1)[0][0]
@@ -360,15 +360,14 @@ def vertex_eliminate(vertex: int, graph: GraphsTuple) -> GraphsTuple:
     Returns:
         GraphsTuple: The resulting graph after the vertex elimination.
     """
+    # print('vertex: ', vertex)
     # Divide the graph representation into its components
     # edge_conn contains the senders and receivers of the graph, i.e. the connectivity
     # of the vertices with each other
     # edge_vals contains the values of the edges
     # print('Sparse eliminated vertex: ',vertex)
-
     edge_conn = jnp.stack([graph.senders, graph.receivers]).T
     edge_vals = graph.edges
-        
     # Get the edges connected to the vertex
     # i, j are the used number of places in the buffers, i.e. the number of ingoing
     # and outgoing edges
@@ -384,7 +383,6 @@ def vertex_eliminate(vertex: int, graph: GraphsTuple) -> GraphsTuple:
     # k is the number of newly created edges
     output = make_new_edges(edge_combos, in_vals, out_vals, edge_conn, edge_vals, free_idxs)
     k, edge_conn, edge_vals, n_ops = output
-
     # Build everything into a new graph
     senders = edge_conn[:, 0]
     receivers = edge_conn[:, 1]
@@ -405,7 +403,6 @@ def cross_country(order: Sequence[int], graph: GraphsTuple) -> GraphsTuple:
     Function that implements the cross-country AD using the 
     vertex elimination algorithm.
     TODO add more documentation
-
     Args:
         order (Sequence[int]): The order in which the vertices are eliminated.
         graph (GraphsTuple): Graph representation of the computational graph.
@@ -475,8 +472,8 @@ def embed(num_nodes: int, num_edge: int, graph: GraphsTuple) -> GraphsTuple:
     Returns:
         GraphsTuple: The resulting graph after embedding.
     """
-    node_padding = num_nodes - graph.n_node
-    edge_padding = num_edge - graph.n_edge
+    node_padding = num_nodes - graph.n_node[0]
+    edge_padding = num_edge - graph.n_edge[0]
     
     # Add padding to the nodes
     nodes = jnp.concatenate([graph.nodes, jnp.ones(node_padding)])
@@ -489,7 +486,7 @@ def embed(num_nodes: int, num_edge: int, graph: GraphsTuple) -> GraphsTuple:
                         edges=edges,
                         senders=senders,
                         receivers=receivers,
-                        n_node=num_nodes,
-                        n_edge=num_edge,
+                        n_node=jnp.array([num_nodes]),
+                        n_edge=jnp.array([num_edge]),
                         globals=graph.globals)
     return graph

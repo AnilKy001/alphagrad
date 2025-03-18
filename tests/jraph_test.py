@@ -17,7 +17,7 @@ from alphagrad.vertexgame.transforms import embed as dense_embed
 from graphax import jacve
 from graphax.sparse.utils import count_muls_jaxpr
 from graphax.examples import (RobotArm_6DOF, RoeFlux_1d, f, Perceptron, 
-                            Simple, Lighthouse, Hole, Helmholtz)
+                            Simple, Lighthouse, Hole, Helmholtz, RoeFlux_3d)
 
 from alphagrad.GNN.graph_network import EdgeGATNetwork
 from alphagrad.GNN.graph_utils import graph_sparsify, reverse, add_self_edges_fn
@@ -26,7 +26,7 @@ from alphagrad.GNN.graph_utils import graph_sparsify, reverse, add_self_edges_fn
 
 # F = RobotArm_6DOF
 
-test_funcs = [RobotArm_6DOF, RoeFlux_1d, f, Perceptron, Simple, Lighthouse, Hole]
+test_funcs = [RoeFlux_3d]
 
 def func_test(F):
 
@@ -35,20 +35,28 @@ def func_test(F):
     sig = inspect.signature(F)
     num_params = len(sig.parameters)
 
-    xs = [jnp.zeros((1,))]*num_params
+    ul0 = jnp.array([.1])
+    ul = jnp.array([.1, .2, .3])
+    ul4 = jnp.array([.5])
+    ur0 = jnp.array([.2])
+    ur = jnp.array([.2, .2, .4])
+    ur4 = jnp.array([.6])
+    xs = (ul0, ul, ul4, ur0, ur, ur4)
+
+    # xs = [jnp.zeros((1,))]*num_params
 
     args = range(len(xs))
     dense_graph = make_graph(F, *xs)
 
-    jaxpr = jax.make_jaxpr(jacve(F, order="rev", argnums=args, count_ops=True))(*xs)
-    deriv_jaxpr = jax.make_jaxpr(jacve(F, order="rev", argnums=args, count_ops=True))(*xs)
+    # jaxpr = jax.make_jaxpr(jacve(F, order="rev", argnums=args, count_ops=True))(*xs)
+    # deriv_jaxpr = jax.make_jaxpr(jacve(F, order="rev", argnums=args, count_ops=True))(*xs)
 
-    jacobian, aux = jax.jit(jacve(F, order="rev", argnums=args, count_ops=True, ))(*xs)
-    print("num muls:", aux["num_muls"], "num_adds:", aux["num_adds"])
-    print(count_muls_jaxpr(deriv_jaxpr) - count_muls_jaxpr(jaxpr))
+    # jacobian, aux = jax.jit(jacve(F, order="rev", argnums=args, count_ops=True, ))(*xs)
+    # print("num muls:", aux["num_muls"], "num_adds:", aux["num_adds"])
+    # print(count_muls_jaxpr(deriv_jaxpr) - count_muls_jaxpr(jaxpr))
 
     sparse_graph = graph_sparsify(dense_graph)
-    sparse_graph = add_self_edges_fn(sparse_graph)
+    #sparse_graph = add_self_edges_fn(sparse_graph)
 
     # TODO the sparse version of vertex elimination does not yield the correct number
     # of multiplications and additions
@@ -59,16 +67,16 @@ def func_test(F):
     sparse_num_muls = int(out_graph.globals[0][0])
     # print("jraph reverse time jit", end-start, out_graph.globals)
 
-    # print([(int(i), int(j)) for i, j in zip(out[0], out[1])])
-
-    # key = jrand.PRNGKey(123)
+    key = jrand.PRNGKey(123)
     # print("embedding takes time")
-    # dense_graph = old_embed(key, dense_graph, [20, 150, 20])
+    # dense_graph = dense_embed(key, dense_graph, [20, 150, 20])
     start = time.time()
     out_graph, nops = jax.jit(dense_reverse)(dense_graph)
     end = time.time()
     dense_num_muls = nops
     # print("alphagrad time jit", end-start, nops)
+
+    # print([(int(i), int(j)) for i, j in zip(out[0], out[1])])
 
 
     key = jrand.PRNGKey(42)

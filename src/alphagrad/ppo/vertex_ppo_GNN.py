@@ -30,7 +30,7 @@ from alphagrad.vertexgame import step, step_sparse
 from alphagrad.utils import symlog, symexp, entropy, explained_variance
 from alphagrad.transformer.models import PPOModel, PPOModelGNN
 
-from alphagrad.GNN.graph_utils import graph_sparsify
+from alphagrad.GNN.graph_utils import graph_sparsify, reverse
 
 DEBUG = 0
 
@@ -40,7 +40,7 @@ parser.add_argument("--name", type=str,
                     default="Test", help="Name of the experiment.")
 
 parser.add_argument("--task", type=str,
-                    default="RoeFlux_1d", help="Name of the task to run.")
+                    default="RoeFlux_3d", help="Name of the task to run.")
 
 parser.add_argument("--gpus", type=str, 
                     default="0", help="GPU ID's to use for training.")
@@ -66,16 +66,6 @@ model_key, init_key, key = jrand.split(key, 3)
 config, graph, graph_shape, task_fn = setup_experiment(args.task, args.config_path)
 sparse_graph = graph_sparsify(graph)
 mM_order, scores = make_benchmark_scores(graph)
-
-sparse_graph = GraphsTuple(
-        nodes=jnp.array([sparse_graph.nodes]), # Node features are masks for elimination. (0 not eliminated, 1 eliminated).
-        edges=jnp.array([sparse_graph.edges]),
-        senders=jnp.array([sparse_graph.senders]),
-        receivers=jnp.array([sparse_graph.receivers]),
-        n_node=jnp.array([sparse_graph.n_node]),
-        n_edge=jnp.array([sparse_graph.n_edge]),
-        globals=sparse_graph.globals
-    )
 
 parameters = config["hyperparameters"]
 ENTROPY_WEIGHT = parameters["entropy_weight"]
@@ -284,7 +274,7 @@ def shuffle_and_batch(trajectories, key):
 def init_carry_sparse(keys):
     # graphs_seq = [sparse_graph for _ in range(len(keys))]
     # graphs_batch1 = jraph.batch(graphs_seq)
-    graphs_batch = jax.tree_map(lambda x: jnp.tile(x, (32, *[1 for _ in range(len(x.shape[1:]))])), sparse_graph)
+    graphs_batch = jax.tree_map(lambda x: jnp.tile(x, (NUM_ENVS, *[1 for _ in range(len(x.shape))])), sparse_graph)
     
     return graphs_batch
 
@@ -432,12 +422,8 @@ for episode in pbar:
     kl_div, policy_entropy, fit_quality, explained_var, ppo_loss, value_loss, entropy_loss, total_loss, clipping_trigger_ratio = metrics
     
     test_keys = jrand.split(key, NUM_ENVS)
-    best_return, best_act_seq_with_offset, returns = test_agent(model, 98, test_keys)
+    best_return, best_act_seq, returns = test_agent(model, 143, test_keys)
 
-    best_act_seq = []
-    for elem_ in best_act_seq_with_offset:
-        best_act_seq.append(elem_ - 5)
-    
     if best_return > best_global_return:
         best_global_return = best_return
         best_global_act_seq = best_act_seq

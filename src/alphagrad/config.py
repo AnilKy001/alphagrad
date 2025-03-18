@@ -17,6 +17,7 @@ def setup_experiment(task: str, path: str, prefix: str = ""):
     module = import_module(package)
     
     task_fn_name = "make_" + task
+    print("task fn name: ", task_fn_name)
     make_fn = getattr(module, task_fn_name)
     graph, graph_shape, task_fn = make_fn()
     return config, graph, graph_shape, task_fn
