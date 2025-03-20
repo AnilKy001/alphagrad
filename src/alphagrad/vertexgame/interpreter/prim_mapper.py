@@ -106,6 +106,7 @@ vertex_registry[lax.atanh_p] = add_mono_vertex
 
 vertex_registry[lax.integer_pow_p] = add_mono_vertex
 vertex_registry[lax.sqrt_p] = add_mono_vertex
+vertex_registry[lax.square] = add_mono_vertex
 vertex_registry[lax.rsqrt_p] = add_mono_vertex
 vertex_registry[lax.logistic_p] = add_mono_vertex
 
@@ -207,6 +208,8 @@ vertex_registry[jax._src.ad_util.add_any_p] = add_bi_vertex
 # vertex_registry[jax.ad.add_jaxvals_p] = add_bi_vertex
 vertex_registry[lax.eq_p] = add_bi_vertex
 vertex_registry[lax.pow_p] = add_bi_vertex
+vertex_registry[lax.max_p] = add_bi_vertex
+vertex_registry[lax.min_p] = add_bi_vertex
 
 
 def add_dot_general_vertex(edges, eqn, variables, **params):
